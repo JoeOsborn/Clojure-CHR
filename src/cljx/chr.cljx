@@ -1,22 +1,15 @@
 (ns chr
-  (:use [chr.debug])
+  (:use [chr.debug :only (trace reset-bench bench-here nanotime)]
+				[chr.types :only (variable? variable)])
+  (#+clj :use #+cljs :use-macros
+    [chr.macros :only (fresh gather-matches chrfn rule)]
+    [chr.debug.macros :only (bench no-bench)])
   (:require [clojure.set :as set]
             [clojure.walk :as walk]))
 
-(defrecord Variable [name])
-(defn variable? [x]
-  (instance? Variable x))
-
-(defn variable
-  "No effort expended to make variables hygenic.
-   Scope ranges over entire rules (head & body)."
-  [x]
-  (->Variable x))
-
-(defmacro fresh
-  [varlist & body]
-  `(let [~@(mapcat (fn [v] [v `(variable (quote ~v))]) varlist)]
-     ~@body))
+(def error
+  #+clj (fn [& e] (throw (apply Exception. e)))
+  #+cljs (fn [& e] (throw (apply js/Error. e))))
 
 (defn rewrite
   [pattern rewrite-map]
@@ -108,14 +101,14 @@
                                                             (when (some #(not (instance? clojure.lang.Symbol (:name %)))
                                                                         (keys bindings))
                                                               (trace [:let-bind :error] ["roots" root-store  "current subs" s "bindings" bindings "args" args "rewritten to" (rewrite args s) "bfn" bfn])
-                                                              (throw (Exception. "Bad type for variable binding. Check the let binder.")))
+                                                              (error "Bad type for variable binding. Check the let binder."))
                                                             bindings)))
                               substs
                               let-binders)]))
 
 (defn find-matches*
-  "Returns a seq of substitution maps, arity of pattern must be matched."  
-  ([root-store store substs guards let-binders [term & next-terms]]     
+  "Returns a seq of substitution maps, arity of pattern must be matched."
+  ([root-store store substs guards let-binders [term & next-terms]]
      (no-bench
       :find-matches
       (let [term (if (variable? term) (get substs term term) term)]
@@ -138,11 +131,11 @@
                                (if (contains? store term) [substs] []))
                              [])
          (= ::& term) (let [rest (first next-terms)
-                            [grnd-binders _ next-ground] (sort-let-binders let-binders (conj (keys substs) rest))                            
+                            [grnd-binders _ next-ground] (sort-let-binders let-binders (conj (keys substs) rest))
                             [grnd-guards _] (sort-guards guards next-ground)]
                         (filter
                          #(satisfies-guards? root-store % grnd-guards)
-                         (map #(let-bind root-store (assoc substs rest %) grnd-binders) (unwrap store))))         
+                         (map #(let-bind root-store (assoc substs rest %) grnd-binders) (unwrap store))))
          (set? store) (if (= (first next-terms) ::&)
                         (let [rest (second next-terms)]
                           (if (variable? term)
@@ -175,18 +168,6 @@
      (find-matches* store store substs guards [] terms))
   ([root-store store substs guards let-binders terms]
      (find-matches* root-store store substs guards let-binders terms)))
-
-(defmacro gather-matches
-  "lvar introduces lvar(s) to match in the pattern.
-   Can be a single lvar, returning a seq of values for matched lvar,
-   or a vec of lvars in which case will return a seq of tuples
-   representing matched values."
-  [lvar & store-guards-pattern]
-  (if (vector? lvar)
-    `(fresh ~lvar (map (fn [m#] (vec (map (fn [v#] (get m# v#)) ~lvar)))
-                        (find-matches ~@store-guards-pattern)))
-    `(fresh [~lvar] (map (fn [m#] (get m# ~lvar))
-                          (find-matches ~@store-guards-pattern)))))
 
 (defn store-values
   "flat list of every value in a store (not grouped by constraints)"
@@ -224,7 +205,7 @@
           , (trace [:mh-letbinders] ["store" store "root-store" root-store "pattern" pattern "subts" substs "->"
                                      (sort-let-binders (partial-apply-chrfns let-binders substs) (concat (flatten pattern) (keys substs)))])
           [grnd-guards ungrnd-guards] (sort-guards (partial-apply-chrfns guards substs) next-ground)
-          subbed-pat (trace [:mh-rewrite] ["lvar sig:" (map variable? (rewrite pattern substs)) (bench :mh-rewrite (rewrite pattern substs))]) 
+          subbed-pat (trace [:mh-rewrite] ["lvar sig:" (map variable? (rewrite pattern substs)) (bench :mh-rewrite (rewrite pattern substs))])
           next-substs (bench :mh-find-matches (find-matches root-store store substs grnd-guards grnd-binders subbed-pat))]
       (trace [:match-head] ["Matched on " pattern "with subs" next-substs "with guards"(map first grnd-guards) ])
       (when (and (empty? rst)  (not (empty? ungrnd-guards)))
@@ -293,8 +274,8 @@
   ([store rules active-constraint queued-constraints prop-history continued-rule-matches]
      (if active-constraint
        (let [_ (when (> (swap! propagations inc) @rule-propagation-limit)
-                 (throw (Exception. "Rule propagation overflow.")))
-             t1 (System/nanoTime)
+                 (error "Rule propagation overflow."))
+             t1 (nanotime)
              [[fired-rule substs next-store new-constraints] & next-rule-matches]
              , (filter
                 (fn [[fired-rule substs next-store new-constraints]]
@@ -310,13 +291,13 @@
                      (or continued-rule-matches
                          (matching-rule-seq store rules active-constraint))))]
          (if (and (empty? (bench :find-matches (find-matches store [] active-constraint)))
-                  fired-rule) 
+                  fired-rule)
            (let [_ (bench-here :awake-found t1)
-                 t2 (System/nanoTime)                 
-                 _ (trace [:awake] [(map (fn [[op pat]] [op (rewrite pat substs)]) (:head fired-rule))])                 
+                 t2 (nanotime)
+                 _ (trace [:awake] [(map (fn [[op pat]] [op (rewrite pat substs)]) (:head fired-rule))])
                  next-history (if (:tabled fired-rule)
                                 (into prop-history [[fired-rule substs new-constraints]])
-                                prop-history) 
+                                prop-history)
                  {kept-awake [:+ true],
                   kept-asleep [:+ false]}
                  ,  (group-pairs (map (fn [[op pat]]
@@ -329,7 +310,7 @@
              (trace [:awake :firing] [(:name fired-rule) "on store:" store "::"active-constraint"::" queued-constraints
                                       "kept-awake:" kept-awake "kept-asleep:" kept-asleep "creating" new-constraints "with subs:" substs])
              (bench-here (:name fired-rule) t2)
-             #_"If no constraints to be removed, maintain same store and position within the iterator."
+             ;"If no constraints to be removed, maintain same store and position within the iterator."
              (if (empty? (filter (fn [[op _]] (= op :-)) (:head fired-rule)))
                (recur store
                       rules active-constraint (doall (concat new-constraints queued-constraints)) next-history (or next-rule-matches [])) ;must distinguish between empty and nil, nil means don't use, empty means none left-
@@ -346,20 +327,8 @@
                     nil))))
        store)))
 
-(defmacro chrfn
-  "chrfns must be of the form
-   (chrfn name? [store arg1 ...argn]) where store is bound to
-   the current state of the constraint store.
-   becomes [required-lvars, (fn [store required] ...)] tuple"
-  {:forms '[(chrfn name? [store params*] exprs*)]}
-  [args-or-name & rst]
-  (if (vector? args-or-name)
-    `[~(vec (drop 1 args-or-name)) (fn ~args-or-name ~@rst)]
-    (let [[args & body] rst]
-      `[~(vec (drop 1 args)) (fn ~args-or-name ~args ~@body)])))
-
 (defn let-binder*
-  "convert a normal let binding into a tuple holding afunction that returns a binding map.
+  "convert a normal let binding into a tuple holding a function that returns a binding map.
    a let binder is a [required-lvars, provided-lvars, (fn [store required] ...)] tuple"
   [name argform new-vars bindform expr]
   (let [new-var-aliases (map #(gensym (str % "-")) new-vars)]
@@ -370,54 +339,12 @@
               ~bindform ~expr]
           (hash-map ~@(interleave new-var-aliases new-vars))))]))
 
-(defmacro rule
-  ([head]
-     `(rule ~(symbol (str "rule-" (mod (hash head) 10000))) ~head))
-  ([head body] 
-     (if (vector? head)
-       `(rule ~(symbol (str "rule-" (mod (hash [head body]) 10000))) ~head ~body)
-       `(rule ~head ~body [])))
-  ([name head body]
-     (let [occurrences (vec (map (fn [[op pat]] [op (walk/postwalk
-                                                     (fn [t] (get {'& ::&
-                                                                   '_ (variable (gensym "_"))} t t))
-                                                     pat)])
-                                 (filter (fn [[op pat]] (#{:- :+} op)) (partition 2 head))))
-           guards (vec (map second (filter (fn [[op pat]] (= :when  op)) (partition 2 head))))
-           let-bindings (vec (mapcat #(partition 2 (second %))
-                                     (filter (fn [[op pat]] (= :let  op))
-                                             (partition 2 head))))
-           store-alias (or (last (map second (filter (fn [[op pat]] (= :store op)) (partition 2 head))))
-                           'store)
-           tabled? (or (:tabled (meta name)) (:tabled (meta head)) (:tabled (meta body)))
-           variables (into #{} (for [pattern (concat (map second occurrences)
-                                                     (map first let-bindings))
-                                     term ((fn gather [f] (cond (symbol? f) #{f}
-                                                                (coll? f) (apply set/union (map gather f))
-                                                                :else nil)) pattern)] term))
-           collect-vars (fn [form]
-                          ((fn gather [f] (cond (variables f) #{f}
-                                                (coll? f) (apply set/union (map gather f))
-                                                :else nil)) form))]
-       `(fresh ~(vec variables)
-                {:name (quote ~name)
-                 :head ~occurrences
-                 :guards [~@(map (fn [g] `(chrfn ~name [~store-alias ~@(collect-vars g)] ~g)) guards)]
-                 :let-binders [~@(map (fn [[bindform expr]]
-                                        (let-binder* name
-                                                     (vec (concat [store-alias] (collect-vars expr)))
-                                                     (collect-vars bindform)
-                                                     bindform expr))
-                                      let-bindings)]
-                 :tabled ~tabled?
-                 :bodyfn (chrfn ~name [~store-alias ~@(collect-vars body)] ~body)}))))
-
 ;---------------- Examples ---------------------
 
 (def leq-rules (fresh [x y z a b eq eq1 eq2 c d]
                        [{:name :Reflexivity
                          :head [[:- [:leq d d]]]}
-                        
+
                         {:name :Antisymmetry
                          :head [[:- [:leq x y]]
                                 [:- [:leq y x]]]
@@ -425,7 +352,7 @@
                                                   [[:equivclass x y]]
                                                   [[:equivclass y x]]))}
 
-                        #_"Herbrand equality:"       
+                        ;"Herbrand equality:"
                         {:name :Eq-rewrite1
                          :head [[:- [:leq x b]]
                                 [:+ [:equivclass eq x]]]

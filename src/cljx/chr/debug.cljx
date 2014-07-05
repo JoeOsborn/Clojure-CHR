@@ -1,6 +1,14 @@
 (ns chr.debug
   (:require [clojure.set :as set]))
 
+(def nanotime 
+  #+clj (fn [] (System/nanoTime))
+  #+cljs 
+    (let [perf (.-performance js/window)]
+      (or (.-now perf)
+          (.-webkitNow perf)
+          (fn [] (.getTime (js/Date.))))))
+
 (def trace-set (atom #{}))
 (def trace-ignore (atom #{}))
 (defn trace
@@ -16,40 +24,15 @@
        (flush))
      expr))
 
-;comment out traces at the source level:
-#_(defmacro trace
-  ([labels strs] (last strs))
-  ([labels strs expr] expr))
-
 (def times (atom {}))
 
 (defn reset-bench []
   (swap! times (fn [_] {})))
 
-#_(defmacro bench
-  [bench-key expression]
-  `(let [start-time# (System/nanoTime)
-         e# ~expression
-         end-time# (System/nanoTime)]
-     (swap! times update-in [~bench-key] (fn [[old-count# old-time#]]
-                                           [(inc (or old-count# 0))
-                                            (+ (or old-time# 0) (* (- end-time# start-time#)
-                                                                   0.000001))]))
-     e#))
-
-(defmacro bench
-  "commenting out all benchmark hooks at the sorce level."
-  [bench-key expression] expression)
-
-(defmacro no-bench
-  "comment out specific benchmark hooks at the source level."
-  [bench-key expression]
-  expression)
-
 (defn bench-here
   "add a benchmark time from the given start-time (in nanoseconds)"
   [bench-key start-time]
-  (let [end-time (System/nanoTime)]
+  (let [end-time (nanotime)]
     (swap! times update-in [bench-key] (fn [[old-count old-time]]
                                          [(inc (or old-count 0))
                                           (+ (or old-time 0) (* (- end-time start-time)
