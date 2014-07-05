@@ -10,22 +10,22 @@
   :plugins [[lein-cljsbuild "1.0.2"]
 						[lein-typed "0.3.4"]
             [com.keminglabs/cljx "0.4.0"]]
-  
+
   :cljx {:builds [{:source-paths ["src/cljx"]
-                   :output-path "src/clj"
+                   :output-path "target/clj"
                    :rules :clj}
 
                   {:source-paths ["src/cljx"]
-                   :output-path "src/cljs"
+                   :output-path "target/cljs"
                    :rules :cljs}]}
 
-  :source-paths ["src/clj"]
-  
+  :source-paths ["src/macros" "src/clj" "target/clj"]
+
   :hooks [cljx.hooks]
 
   :cljsbuild {
     :builds [{:id "clojure-chr"
-              :source-paths ["src/cljs" "src/cljx"]
+              :source-paths ["src/macros" "src/cljs" "target/cljs"]
               :compiler {
                 :output-to "web/js/clojure-chr.js"
                 :output-dir "web/js/out"
